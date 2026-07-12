@@ -183,6 +183,7 @@ fn start_job(stream: &mut TcpStream, png: Vec<u8>, state: Arc<AppState>) -> std:
             },
         );
     }
+    eprintln!("riddle-web: job {job_id} page={} bytes", png.len());
     let worker_id = job_id.clone();
     std::thread::spawn(move || run_job(worker_id, png, state));
     response(
@@ -226,6 +227,25 @@ fn push_job(state: &Arc<AppState>, job_id: &str, kind: &str, text: &str) {
 }
 
 fn run_job(job_id: String, png: Vec<u8>, state: Arc<AppState>) {
+    if std::env::var("RIDDLE_MOCK").as_deref() == Ok("1") {
+        let _ = png;
+        std::thread::sleep(Duration::from_millis(700));
+        push_job(
+            &state,
+            &job_id,
+            "ink",
+            "Ah… so the diary has found a new writer.",
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        push_job(
+            &state,
+            &job_id,
+            "ink",
+            "Tell me, what secret brought you to these pages?",
+        );
+        push_job(&state, &job_id, "done", "");
+        return;
+    }
     let remember = state.memory.lock().map(|m| m.is_some()).unwrap_or(false);
     let oracle = match Oracle::spawn(remember) {
         Ok(o) => o,

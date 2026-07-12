@@ -95,7 +95,7 @@
   async function commit() {
     if (busy || !strokes.length) return;
     busy = true;
-    const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    const png = await makePageBlob();
     const drinking = drinkInk();
     try {
       // Upload quickly, then poll short-lived requests. HarmonyOS browsers may
@@ -120,6 +120,29 @@
       ctx.clearRect(0, 0, innerWidth, innerHeight); canvas.style.opacity = '1';
       strokes = []; busy = false; hint.style.opacity = '1';
     }
+  }
+
+  async function makePageBlob() {
+    const points = strokes.flat();
+    const pad = 32;
+    const minX = Math.max(0, Math.min(...points.map(p => p.x)) - pad);
+    const minY = Math.max(0, Math.min(...points.map(p => p.y)) - pad);
+    const maxX = Math.min(innerWidth, Math.max(...points.map(p => p.x)) + pad);
+    const maxY = Math.min(innerHeight, Math.max(...points.map(p => p.y)) + pad);
+    const cropW = Math.max(1, maxX - minX), cropH = Math.max(1, maxY - minY);
+    const scale = Math.min(1, 1200 / Math.max(cropW, cropH));
+    const page = document.createElement('canvas');
+    page.width = Math.max(1, Math.round(cropW * scale));
+    page.height = Math.max(1, Math.round(cropH * scale));
+    const pageCtx = page.getContext('2d');
+    pageCtx.fillStyle = '#ffffff';
+    pageCtx.fillRect(0, 0, page.width, page.height);
+    pageCtx.drawImage(
+      canvas,
+      minX * dpr, minY * dpr, cropW * dpr, cropH * dpr,
+      0, 0, page.width, page.height
+    );
+    return new Promise(resolve => page.toBlob(resolve, 'image/png'));
   }
 
   async function pollJob(job) {

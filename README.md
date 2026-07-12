@@ -122,6 +122,16 @@ pgrep -a riddle-web
 - 查看 `riddle.log` 中的 API 错误
 - 确认 Kimi 开放平台账户仍有可用额度
 
+日志中的 `page=... bytes` 是实际上传给视觉模型的裁剪页面大小。
+
+### 不调用 API 测试界面动画
+
+在电脑或平板启动前设置 `RIDDLE_MOCK=1`，日记会使用本地模拟回复，适合检查鼠标/手写笔、吸墨和逐笔动画，不会产生 API 费用：
+
+```bash
+RIDDLE_MOCK=1 RIDDLE_OPENAI_KEY=sk-local-test ./target/release/riddle-web
+```
+
 ### 手写笔没有压感
 
 压感取决于平板系统和浏览器是否向网页开放 `PointerEvent.pressure`。没有压感时仍然可以正常书写，只是笔画粗细变化较少。
