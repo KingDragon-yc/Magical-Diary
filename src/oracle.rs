@@ -474,6 +474,7 @@ impl HttpOracle {
             .as_deref()
             .map(|t| format!("\"thinking\":{{\"type\":{}}},", json_quote(t)))
             .unwrap_or_default();
+        let optional_fields = format!("{reasoning_field}{thinking_field}");
 
         let system = if self.remember {
             format!("{PERSONA}{MEMORY_PROTOCOL}")
@@ -508,26 +509,15 @@ impl HttpOracle {
             // while many OpenAI-compatible servers only know "max_tokens".
             // Send the widely-supported name first; retry once if corrected.
             let request = |cap_field: &str| {
-                let body = format!(
-                    concat!(
-                        "{{\"model\":{},\"stream\":true,\"{}\":{},{},{}",
-                        "\"messages\":[",
-                        "{{\"role\":\"system\",\"content\":{}}},",
-                        "{}",
-                        "{{\"role\":\"user\",\"content\":[",
-                        "{{\"type\":\"text\",\"text\":{}}},",
-                        "{{\"type\":\"image_url\",\"image_url\":{{\"url\":\"data:image/png;base64,{}\"}}}}",
-                        "]}}]}}"
-                    ),
-                    json_quote(&model),
+                let body = build_chat_body(
+                    &model,
                     cap_field,
                     max_tokens,
-                    reasoning_field,
-                    thinking_field,
-                    json_quote(&system),
-                    history_msgs,
-                    json_quote(&user_text),
-                    img,
+                    &optional_fields,
+                    &system,
+                    &history_msgs,
+                    &user_text,
+                    &img,
                 );
                 agent
                     .post(&format!("{base}/chat/completions"))
@@ -603,6 +593,38 @@ impl HttpOracle {
             // tx drops here → the diary's receiver disconnects = reply complete.
         });
     }
+}
+
+fn build_chat_body(
+    model: &str,
+    cap_field: &str,
+    max_tokens: u32,
+    optional_fields: &str,
+    system: &str,
+    history_msgs: &str,
+    user_text: &str,
+    image_b64: &str,
+) -> String {
+    format!(
+        concat!(
+            "{{\"model\":{},\"stream\":true,\"{}\":{},{}",
+            "\"messages\":[",
+            "{{\"role\":\"system\",\"content\":{}}},",
+            "{}",
+            "{{\"role\":\"user\",\"content\":[",
+            "{{\"type\":\"text\",\"text\":{}}},",
+            "{{\"type\":\"image_url\",\"image_url\":{{\"url\":\"data:image/png;base64,{}\"}}}}",
+            "]}}]}}"
+        ),
+        json_quote(model),
+        cap_field,
+        max_tokens,
+        optional_fields,
+        json_quote(system),
+        history_msgs,
+        json_quote(user_text),
+        image_b64,
+    )
 }
 
 /// Pull `choices[0].delta.content` out of one SSE `data:` JSON object.
@@ -833,6 +855,27 @@ mod tests {
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn chat_body_keeps_optional_fields_validly_separated() {
+        let body = build_chat_body(
+            "kimi-k2.6",
+            "max_tokens",
+            800,
+            "\"thinking\":{\"type\":\"disabled\"},",
+            "system",
+            "",
+            "reply",
+            "aGVsbG8=",
+        );
+        assert!(!body.contains(",,"), "malformed JSON separators: {body}");
+        assert!(body.contains("\"max_tokens\":800,\"thinking\""));
+        assert!(body.contains("\"thinking\":{\"type\":\"disabled\"},\"messages\""));
+
+        let plain = build_chat_body("m", "max_tokens", 20, "", "s", "", "u", "aQ==");
+        assert!(!plain.contains(",,"), "malformed JSON separators: {plain}");
+        assert!(plain.contains("\"max_tokens\":20,\"messages\""));
     }
 
     #[test]
