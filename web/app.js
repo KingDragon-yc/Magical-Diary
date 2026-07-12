@@ -9,6 +9,7 @@
   const apiKey = document.querySelector('#api-key');
   const setupError = document.querySelector('#setup-error');
   let strokes = [], current = null, timer = 0, busy = false, dpr = 1;
+  let replyCursorY = null, replyResting = false, replyFadeTimer = 0;
   let last = null;
 
   function size() {
@@ -39,18 +40,18 @@
   async function resumePending() {
     const job = sessionStorage.getItem('riddlePendingJob');
     if (!job) return;
-    busy = true; hint.style.opacity = '0'; blot.classList.add('thinking');
+    let handedOff = false;
+    busy = true; replyCursorY = null; hint.style.opacity = '0'; blot.classList.add('thinking');
     try {
       await pollJob(job);
       sessionStorage.removeItem('riddlePendingJob');
       blot.classList.remove('thinking');
-      await delay(5000); await fadeCanvas(1200);
+      settleReply(5000); handedOff = true;
     } catch (err) {
       sessionStorage.removeItem('riddlePendingJob');
       console.error(err);
     } finally {
-      blot.classList.remove('thinking'); ctx.clearRect(0, 0, innerWidth, innerHeight);
-      canvas.style.opacity = '1'; busy = false; hint.style.opacity = '1';
+      if (!handedOff) resetPage();
     }
   }
   setupForm.addEventListener('submit', async e => {
@@ -70,6 +71,7 @@
   canvas.addEventListener('pointerdown', e => {
     if (busy || (e.pointerType === 'mouse' && e.button !== 0)) return;
     e.preventDefault(); canvas.setPointerCapture(e.pointerId);
+    if (replyResting) clearRestingReply();
     clearTimeout(timer); hint.style.opacity = '0';
     current = []; strokes.push(current); last = point(e); current.push(last);
     ctx.fillStyle = '#25231d'; ctx.beginPath(); ctx.arc(last.x, last.y, 1.4 + last.p * 2.8, 0, Math.PI * 2); ctx.fill();
@@ -94,7 +96,8 @@
 
   async function commit() {
     if (busy || !strokes.length) return;
-    busy = true;
+    busy = true; replyCursorY = null;
+    let handedOff = false;
     const png = await makePageBlob();
     const drinking = drinkInk();
     try {
@@ -109,26 +112,28 @@
       await pollJob(job);
       sessionStorage.removeItem('riddlePendingJob');
       blot.classList.remove('thinking');
-      await delay(Math.min(18000, 4500 + strokes.length * 500));
-      await fadeCanvas(1500);
+      settleReply(Math.min(18000, 4500 + strokes.length * 500));
+      handedOff = true;
     } catch (e) {
       blot.classList.remove('thinking');
       await writeReply('The ink will not answer tonight.');
-      await delay(5000); await fadeCanvas(1200);
+      settleReply(5000); handedOff = true;
       console.error(e);
     } finally {
-      ctx.clearRect(0, 0, innerWidth, innerHeight); canvas.style.opacity = '1';
-      strokes = []; busy = false; hint.style.opacity = '1';
+      if (!handedOff) resetPage();
     }
   }
 
   async function makePageBlob() {
     const points = strokes.flat();
     const pad = 32;
-    const minX = Math.max(0, Math.min(...points.map(p => p.x)) - pad);
-    const minY = Math.max(0, Math.min(...points.map(p => p.y)) - pad);
-    const maxX = Math.min(innerWidth, Math.max(...points.map(p => p.x)) + pad);
-    const maxY = Math.min(innerHeight, Math.max(...points.map(p => p.y)) + pad);
+    let bx0 = innerWidth, by0 = innerHeight, bx1 = 0, by1 = 0;
+    for (const p of points) {
+      bx0 = Math.min(bx0, p.x); by0 = Math.min(by0, p.y);
+      bx1 = Math.max(bx1, p.x); by1 = Math.max(by1, p.y);
+    }
+    const minX = Math.max(0, bx0 - pad), minY = Math.max(0, by0 - pad);
+    const maxX = Math.min(innerWidth, bx1 + pad), maxY = Math.min(innerHeight, by1 + pad);
     const cropW = Math.max(1, maxX - minX), cropH = Math.max(1, maxY - minY);
     const scale = Math.min(1, 1200 / Math.max(cropW, cropH));
     const page = document.createElement('canvas');
@@ -181,12 +186,15 @@
 
   async function writeReply(text) {
     blot.classList.remove('thinking');
-    await document.fonts.load('64px Riddle');
-    const max = Math.min(innerWidth * .78, 980), fontSize = Math.max(38, Math.min(68, innerWidth / 15));
-    ctx.font = `${fontSize}px Riddle`; ctx.fillStyle = '#29271f'; ctx.strokeStyle = '#29271f';
+    const hasHan = /[\u3400-\u9fff]/.test(text);
+    const family = hasHan ? 'RiddleCJK' : 'Riddle';
+    const fontSize = Math.max(34, Math.min(hasHan ? 52 : 58, innerWidth / (hasHan ? 20 : 18)));
+    await document.fonts.load(`${fontSize}px ${family}`);
+    const max = Math.min(innerWidth * .78, 980);
+    ctx.font = `${fontSize}px ${family}`; ctx.fillStyle = '#29271f'; ctx.strokeStyle = '#29271f';
     ctx.lineWidth = 1.15; ctx.lineCap = 'round';
-    const lines = wrap(text, max), lineH = fontSize * 1.18;
-    let y = Math.max(90, (innerHeight - lines.length * lineH) * .38);
+    const lines = wrap(text, max), lineH = fontSize * (hasHan ? 1.38 : 1.22);
+    let y = replyCursorY ?? Math.max(90, (innerHeight - lines.length * lineH) * .32);
     for (const line of lines) {
       const width = ctx.measureText(line).width, x = (innerWidth - width) / 2;
       // Fine-grained clipping makes each connected word appear as if a nib is crossing it.
@@ -199,6 +207,31 @@
       }
       y += lineH;
     }
+    replyCursorY = y;
+  }
+
+  function settleReply(ms) {
+    busy = false; strokes = []; current = null; replyResting = true;
+    clearTimeout(replyFadeTimer);
+    replyFadeTimer = setTimeout(async () => {
+      if (!replyResting) return;
+      replyResting = false;
+      await fadeCanvas(1200);
+      resetPage();
+    }, ms);
+  }
+
+  function clearRestingReply() {
+    clearTimeout(replyFadeTimer); replyResting = false; replyCursorY = null;
+    canvas.getAnimations().forEach(a => a.cancel());
+    canvas.style.opacity = '1'; ctx.clearRect(0, 0, innerWidth, innerHeight);
+  }
+
+  function resetPage() {
+    clearTimeout(replyFadeTimer); replyResting = false; replyCursorY = null;
+    blot.classList.remove('thinking'); canvas.getAnimations().forEach(a => a.cancel());
+    ctx.clearRect(0, 0, innerWidth, innerHeight); canvas.style.opacity = '1';
+    strokes = []; current = null; busy = false; hint.style.opacity = '1';
   }
 
   function wrap(text, max) {

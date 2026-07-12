@@ -5,3 +5,4 @@
 # Never commit a real API key.
 /oracle.env
 /.config/
+/.local/

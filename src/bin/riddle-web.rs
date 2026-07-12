@@ -13,6 +13,7 @@ const INDEX: &[u8] = include_bytes!("../../web/index.html");
 const APP_JS: &[u8] = include_bytes!("../../web/app.js");
 const STYLE: &[u8] = include_bytes!("../../web/style.css");
 const FONT: &[u8] = include_bytes!("../../fonts/DancingScript.ttf");
+const CJK_FONT: &[u8] = include_bytes!("../../fonts/ChenYuluoyan-2.0-Thin.ttf");
 
 struct Job {
     events: Vec<(String, String)>,
@@ -91,6 +92,7 @@ fn handle(mut stream: TcpStream, state: Arc<AppState>) -> std::io::Result<()> {
         ("GET", "/app.js") => asset(&mut stream, "text/javascript; charset=utf-8", APP_JS),
         ("GET", "/style.css") => asset(&mut stream, "text/css; charset=utf-8", STYLE),
         ("GET", "/DancingScript.ttf") => asset(&mut stream, "font/ttf", FONT),
+        ("GET", "/ChenYuluoyan-2.0-Thin.ttf") => asset(&mut stream, "font/ttf", CJK_FONT),
         ("GET", "/api/health") => asset(&mut stream, "application/json", br#"{"ok":true}"#),
         ("GET", "/api/config") => {
             let ready = std::env::var("RIDDLE_OPENAI_KEY")

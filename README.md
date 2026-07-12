@@ -92,6 +92,27 @@ sleep 1
 termux-open-url http://127.0.0.1:9314
 ```
 
+更新不会删除已经保存的 API Key 和对话记忆。
+
+## 从头重新安装（可选）
+
+如果项目目录被改乱了，可以先保留旧目录，再重新克隆一份：
+
+```bash
+cd "$HOME"
+pkill -f riddle-web 2>/dev/null
+mv Magical-Diary "Magical-Diary.backup.$(date +%Y%m%d-%H%M%S)"
+git clone https://github.com/KingDragon-yc/Magical-Diary.git
+cd Magical-Diary
+cargo build --release --bin riddle-web
+nohup ./target/release/riddle-web > riddle.log 2>&1 &
+sleep 2
+termux-open-url http://127.0.0.1:9314
+```
+
+API Key 位于 `$HOME/.config/riddle/oracle.env`，记忆位于
+`$HOME/.local/share/riddle/memories`，所以重新克隆项目不会让日记失忆。
+
 ## 停止
 
 ```bash
@@ -181,4 +202,4 @@ http://127.0.0.1:9314
 
 本仓库在原项目基础上增加了面向鸿蒙 / Android 平板的 Termux 本地网页版本，包括浏览器手写画布、本地 HTTP 服务、Kimi 配置和首次启动设置界面。
 
-原项目采用 MIT License，本仓库继续保留并遵循该许可证，详见 [LICENSE](LICENSE)。Dancing Script 字体许可见 [fonts/OFL.txt](fonts/OFL.txt)。
+原项目采用 MIT License，本仓库继续保留并遵循该许可证，详见 [LICENSE](LICENSE)。英文字体 Dancing Script 的许可见 [fonts/OFL.txt](fonts/OFL.txt)；中文手写字体采用 [Chenyu-otf/chenyuluoyan_thin](https://github.com/Chenyu-otf/chenyuluoyan_thin) 的「辰宇落雁體 2.0 Thin」，许可见 [fonts/ChenYuluoyan-OFL.txt](fonts/ChenYuluoyan-OFL.txt)。
