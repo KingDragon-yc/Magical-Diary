@@ -41,7 +41,7 @@ cargo build --release --bin riddle-web
 termux-wake-lock
 nohup ./target/release/riddle-web > riddle.log 2>&1 &
 sleep 2
-termux-open-url http://127.0.0.1:8787
+termux-open-url http://127.0.0.1:9314
 ```
 
 第一次编译需要下载 Rust 依赖，可能要等待几分钟。
@@ -70,7 +70,7 @@ cd "$HOME/Magical-Diary"
 termux-wake-lock
 nohup ./target/release/riddle-web > riddle.log 2>&1 &
 sleep 1
-termux-open-url http://127.0.0.1:8787
+termux-open-url http://127.0.0.1:9314
 ```
 
 右上角有一个很淡的菱形：
@@ -89,7 +89,7 @@ cargo build --release --bin riddle-web
 pkill riddle-web 2>/dev/null
 nohup ./target/release/riddle-web > riddle.log 2>&1 &
 sleep 1
-termux-open-url http://127.0.0.1:8787
+termux-open-url http://127.0.0.1:9314
 ```
 
 ## 停止
@@ -156,7 +156,7 @@ $HOME/.local/share/riddle/memories
 单台平板演示时不需要服务器。程序和网页都在 Termux 本机运行，浏览器访问：
 
 ```text
-http://127.0.0.1:8787
+http://127.0.0.1:9314
 ```
 
 这种方式延迟低，API Key 也不会发送给浏览器。如果以后部署到公网，需要额外配置 HTTPS、访问认证、请求限流和服务端密钥保护。

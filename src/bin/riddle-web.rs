@@ -33,7 +33,7 @@ fn main() {
             format!("{home}/.local/share/riddle/memories"),
         );
     }
-    let bind = std::env::var("RIDDLE_WEB_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
+    let bind = std::env::var("RIDDLE_WEB_BIND").unwrap_or_else(|_| "127.0.0.1:9314".into());
     let state = Arc::new(AppState {
         memory: Mutex::new(MemoryStore::open()),
         jobs: Mutex::new(HashMap::new()),
