@@ -409,6 +409,7 @@ pub struct HttpOracle {
     model: String,
     max_tokens: u32,
     reasoning: Option<String>, // "reasoning_effort" value, e.g. "low"
+    thinking: Option<String>,  // provider thinking mode, e.g. "disabled"
     remember: bool,
 }
 
@@ -434,9 +435,13 @@ impl HttpOracle {
         // ("low" ≈ faster first ink), but some providers reject the field on
         // non-reasoning models, so it must stay out of the default request.
         let reasoning = std::env::var("RIDDLE_OPENAI_REASONING").ok();
+        let thinking = std::env::var("RIDDLE_OPENAI_THINKING")
+            .ok()
+            .or_else(|| base.contains("moonshot.cn").then(|| "disabled".to_string()));
         eprintln!(
-            "riddle: http oracle base={base} model={model} max_tokens={max_tokens} reasoning={}",
-            reasoning.as_deref().unwrap_or("-")
+            "riddle: http oracle base={base} model={model} max_tokens={max_tokens} reasoning={} thinking={}",
+            reasoning.as_deref().unwrap_or("-"),
+            thinking.as_deref().unwrap_or("-")
         );
         Ok(Self {
             base,
@@ -444,6 +449,7 @@ impl HttpOracle {
             model,
             max_tokens,
             reasoning,
+            thinking,
             remember,
         })
     }
@@ -462,6 +468,11 @@ impl HttpOracle {
             .reasoning
             .as_deref()
             .map(|r| format!("\"reasoning_effort\":{},", json_quote(r)))
+            .unwrap_or_default();
+        let thinking_field = self
+            .thinking
+            .as_deref()
+            .map(|t| format!("\"thinking\":{{\"type\":{}}},", json_quote(t)))
             .unwrap_or_default();
 
         let system = if self.remember {
@@ -499,7 +510,7 @@ impl HttpOracle {
             let request = |cap_field: &str| {
                 let body = format!(
                     concat!(
-                        "{{\"model\":{},\"stream\":true,\"{}\":{},{}",
+                        "{{\"model\":{},\"stream\":true,\"{}\":{},{},{}",
                         "\"messages\":[",
                         "{{\"role\":\"system\",\"content\":{}}},",
                         "{}",
@@ -512,6 +523,7 @@ impl HttpOracle {
                     cap_field,
                     max_tokens,
                     reasoning_field,
+                    thinking_field,
                     json_quote(&system),
                     history_msgs,
                     json_quote(&user_text),

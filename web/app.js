@@ -35,6 +35,24 @@
     setTimeout(() => apiKey.focus(), 80);
   }
   configure();
+  resumePending();
+  async function resumePending() {
+    const job = sessionStorage.getItem('riddlePendingJob');
+    if (!job) return;
+    busy = true; hint.style.opacity = '0'; blot.classList.add('thinking');
+    try {
+      await pollJob(job);
+      sessionStorage.removeItem('riddlePendingJob');
+      blot.classList.remove('thinking');
+      await delay(5000); await fadeCanvas(1200);
+    } catch (err) {
+      sessionStorage.removeItem('riddlePendingJob');
+      console.error(err);
+    } finally {
+      blot.classList.remove('thinking'); ctx.clearRect(0, 0, innerWidth, innerHeight);
+      canvas.style.opacity = '1'; busy = false; hint.style.opacity = '1';
+    }
+  }
   setupForm.addEventListener('submit', async e => {
     e.preventDefault(); setupError.textContent = '';
     const button = document.querySelector('#save-key'); button.disabled = true;
@@ -80,30 +98,16 @@
     const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
     const drinking = drinkInk();
     try {
-      // Let the network request run underneath the drinking animation.
+      // Upload quickly, then poll short-lived requests. HarmonyOS browsers may
+      // kill one long streaming connection while the model is thinking.
       const request = fetch('/api/ask', { method: 'POST', headers: {'Content-Type':'image/png'}, body: png });
       await drinking;
       const res = await request;
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-      const reader = res.body.getReader(), decoder = new TextDecoder();
-      let pending = '', queue = [], writing = false;
-      const writeNext = async () => {
-        if (writing || !queue.length) return;
-        writing = true;
-        while (queue.length) await writeReply(queue.shift());
-        writing = false;
-      };
-      for (;;) {
-        const {done, value} = await reader.read();
-        pending += decoder.decode(value || new Uint8Array(), {stream: !done});
-        const lines = pending.split('\n'); pending = lines.pop() || '';
-        for (const line of lines) if (line.trim()) {
-          const ev = JSON.parse(line);
-          if (ev.type === 'ink' || ev.type === 'error') { queue.push(ev.text); writeNext(); }
-        }
-        if (done) break;
-      }
-      while (writing || queue.length) { await new Promise(r => setTimeout(r, 80)); writeNext(); }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const job = (await res.text()).trim();
+      sessionStorage.setItem('riddlePendingJob', job);
+      await pollJob(job);
+      sessionStorage.removeItem('riddlePendingJob');
       blot.classList.remove('thinking');
       await delay(Math.min(18000, 4500 + strokes.length * 500));
       await fadeCanvas(1500);
@@ -116,6 +120,32 @@
       ctx.clearRect(0, 0, innerWidth, innerHeight); canvas.style.opacity = '1';
       strokes = []; busy = false; hint.style.opacity = '1';
     }
+  }
+
+  async function pollJob(job) {
+    let seen = 0, finished = false, waited = 0;
+    const queue = [];
+    let writing = false;
+    const writeNext = async () => {
+      if (writing || !queue.length) return;
+      writing = true;
+      while (queue.length) await writeReply(queue.shift());
+      writing = false;
+    };
+    while (!finished && waited < 240000) {
+      const res = await fetch(`/api/job/${encodeURIComponent(job)}?t=${Date.now()}`, {cache:'no-store'});
+      if (res.status === 404) throw new Error('The remembered answer has faded.');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const events = (await res.text()).split('\n').filter(Boolean).map(line => JSON.parse(line));
+      for (const ev of events.slice(seen)) {
+        if (ev.type === 'ink' || ev.type === 'error') { queue.push(ev.text); writeNext(); }
+        if (ev.type === 'done') finished = true;
+      }
+      seen = events.length;
+      if (!finished) { await delay(650); waited += 650; }
+    }
+    if (!finished) throw new Error('The diary took too long to answer.');
+    while (writing || queue.length) { writeNext(); await delay(80); }
   }
 
   function drinkInk() {

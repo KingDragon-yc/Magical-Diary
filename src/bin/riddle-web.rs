@@ -2,16 +2,27 @@
 
 use riddle::memory::{MemoryStore, Strokes};
 use riddle::oracle::{Event, Oracle, TurnContext};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const INDEX: &[u8] = include_bytes!("../../web/index.html");
 const APP_JS: &[u8] = include_bytes!("../../web/app.js");
 const STYLE: &[u8] = include_bytes!("../../web/style.css");
 const FONT: &[u8] = include_bytes!("../../fonts/DancingScript.ttf");
+
+struct Job {
+    events: Vec<(String, String)>,
+    created: Instant,
+}
+
+struct AppState {
+    memory: Mutex<Option<MemoryStore>>,
+    jobs: Mutex<HashMap<String, Job>>,
+}
 
 fn main() {
     load_env();
@@ -23,7 +34,10 @@ fn main() {
         );
     }
     let bind = std::env::var("RIDDLE_WEB_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
-    let memory = Arc::new(Mutex::new(MemoryStore::open()));
+    let state = Arc::new(AppState {
+        memory: Mutex::new(MemoryStore::open()),
+        jobs: Mutex::new(HashMap::new()),
+    });
     let listener = TcpListener::bind(&bind).unwrap_or_else(|e| {
         eprintln!("riddle-web: cannot listen on {bind}: {e}");
         std::process::exit(1);
@@ -32,10 +46,12 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let memory = Arc::clone(&memory);
+                let state = Arc::clone(&state);
                 std::thread::spawn(move || {
-                    if let Err(e) = handle(stream, memory) {
-                        eprintln!("riddle-web: {e}");
+                    if let Err(e) = handle(stream, state) {
+                        if e.kind() != std::io::ErrorKind::BrokenPipe {
+                            eprintln!("riddle-web: {e}");
+                        }
                     }
                 });
             }
@@ -44,14 +60,15 @@ fn main() {
     }
 }
 
-fn handle(mut stream: TcpStream, memory: Arc<Mutex<Option<MemoryStore>>>) -> std::io::Result<()> {
+fn handle(mut stream: TcpStream, state: Arc<AppState>) -> std::io::Result<()> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(15)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut first = String::new();
     reader.read_line(&mut first)?;
     let mut parts = first.split_whitespace();
     let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+    let target = parts.next().unwrap_or("/");
+    let path = target.split('?').next().unwrap_or("/");
     let mut content_len = 0usize;
     let mut setup_header = false;
     loop {
@@ -89,6 +106,9 @@ fn handle(mut stream: TcpStream, memory: Arc<Mutex<Option<MemoryStore>>>) -> std
                 },
             )
         }
+        ("GET", p) if p.starts_with("/api/job/") => {
+            poll_job(&mut stream, p.trim_start_matches("/api/job/"), &state)
+        }
         ("POST", "/api/config") if setup_header && content_len > 0 && content_len <= 1024 => {
             let mut body = vec![0u8; content_len];
             reader.read_exact(&mut body)?;
@@ -97,7 +117,7 @@ fn handle(mut stream: TcpStream, memory: Arc<Mutex<Option<MemoryStore>>>) -> std
         ("POST", "/api/ask") if content_len > 0 && content_len <= 8 * 1024 * 1024 => {
             let mut png = vec![0u8; content_len];
             reader.read_exact(&mut png)?;
-            ask(stream, png, memory)
+            start_job(&mut stream, png, state)
         }
         _ => response(&mut stream, "404 Not Found", "text/plain", b"Not found"),
     }
@@ -118,7 +138,7 @@ fn save_config(stream: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let contents = format!(
-        "# Saved by riddle-web first-run setup.\nRIDDLE_OPENAI_KEY={key}\nRIDDLE_OPENAI_BASE=https://api.moonshot.cn/v1\nRIDDLE_OPENAI_MODEL=kimi-k2.6\nRIDDLE_OPENAI_MAX_TOKENS=800\n"
+        "# Saved by riddle-web first-run setup.\nRIDDLE_OPENAI_KEY={key}\nRIDDLE_OPENAI_BASE=https://api.moonshot.cn/v1\nRIDDLE_OPENAI_MODEL=kimi-k2.6\nRIDDLE_OPENAI_MAX_TOKENS=800\nRIDDLE_OPENAI_THINKING=disabled\n"
     );
     std::fs::write(&path, contents)?;
     #[cfg(unix)]
@@ -130,6 +150,7 @@ fn save_config(stream: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
     std::env::set_var("RIDDLE_OPENAI_BASE", "https://api.moonshot.cn/v1");
     std::env::set_var("RIDDLE_OPENAI_MODEL", "kimi-k2.6");
     std::env::set_var("RIDDLE_OPENAI_MAX_TOKENS", "800");
+    std::env::set_var("RIDDLE_OPENAI_THINKING", "disabled");
     response(stream, "200 OK", "application/json", br#"{"ok":true}"#)
 }
 
@@ -147,33 +168,95 @@ fn response(
     stream.write_all(body)
 }
 
-fn ask(
-    mut stream: TcpStream,
-    png: Vec<u8>,
-    memory: Arc<Mutex<Option<MemoryStore>>>,
-) -> std::io::Result<()> {
-    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson; charset=utf-8\r\nCache-Control: no-store, no-transform\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n")?;
-    stream.flush()?;
+fn start_job(stream: &mut TcpStream, png: Vec<u8>, state: Arc<AppState>) -> std::io::Result<()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let job_id = format!("{}-{}", now.as_millis(), std::process::id());
+    if let Ok(mut jobs) = state.jobs.lock() {
+        jobs.retain(|_, job| job.created.elapsed() < Duration::from_secs(3600));
+        jobs.insert(
+            job_id.clone(),
+            Job {
+                events: Vec::new(),
+                created: Instant::now(),
+            },
+        );
+    }
+    let worker_id = job_id.clone();
+    std::thread::spawn(move || run_job(worker_id, png, state));
+    response(
+        stream,
+        "202 Accepted",
+        "text/plain; charset=utf-8",
+        job_id.as_bytes(),
+    )
+}
 
-    let remember = memory.lock().map(|m| m.is_some()).unwrap_or(false);
+fn poll_job(stream: &mut TcpStream, job_id: &str, state: &Arc<AppState>) -> std::io::Result<()> {
+    let jobs = state
+        .jobs
+        .lock()
+        .map_err(|_| std::io::Error::other("job lock poisoned"))?;
+    let Some(job) = jobs.get(job_id) else {
+        return response(stream, "404 Not Found", "text/plain", b"job not found");
+    };
+    let mut body = String::new();
+    for (kind, text) in &job.events {
+        body.push_str(&format!(
+            "{{\"type\":{},\"text\":{}}}\n",
+            quote(kind),
+            quote(text)
+        ));
+    }
+    response(
+        stream,
+        "200 OK",
+        "application/x-ndjson; charset=utf-8",
+        body.as_bytes(),
+    )
+}
+
+fn push_job(state: &Arc<AppState>, job_id: &str, kind: &str, text: &str) {
+    if let Ok(mut jobs) = state.jobs.lock() {
+        if let Some(job) = jobs.get_mut(job_id) {
+            job.events.push((kind.to_string(), text.to_string()));
+        }
+    }
+}
+
+fn run_job(job_id: String, png: Vec<u8>, state: Arc<AppState>) {
+    let remember = state.memory.lock().map(|m| m.is_some()).unwrap_or(false);
     let oracle = match Oracle::spawn(remember) {
         Ok(o) => o,
         Err(e) => {
-            return event(
-                &mut stream,
+            push_job(
+                &state,
+                &job_id,
                 "error",
                 &format!("The diary remains silent: {e}"),
-            )
+            );
+            push_job(&state, &job_id, "done", "");
+            return;
         }
     };
-    let ctx = build_ctx(&memory);
+    let ctx = build_ctx(&state);
     let id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let mut path = std::env::temp_dir();
     path.push(format!("riddle-web-{id}-{}.png", std::process::id()));
-    std::fs::write(&path, png)?;
+    if let Err(e) = std::fs::write(&path, png) {
+        push_job(
+            &state,
+            &job_id,
+            "error",
+            &format!("The page could not be read: {e}"),
+        );
+        push_job(&state, &job_id, "done", "");
+        return;
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     oracle.ask(path.to_string_lossy().as_ref(), &ctx, tx);
     let _ = std::fs::remove_file(&path);
@@ -188,11 +271,12 @@ fn ask(
                     reply.push(' ');
                 }
                 reply.push_str(&text);
-                event(&mut stream, "ink", &text)?;
+                push_job(&state, &job_id, "ink", &text);
             }
             Ok(Event::Transcript(text)) => transcript = text,
             Ok(Event::Show(id)) => {
-                let recalled = memory
+                let recalled = state
+                    .memory
                     .lock()
                     .ok()
                     .and_then(|m| m.as_ref().and_then(|s| s.get(id)).cloned());
@@ -202,37 +286,28 @@ fn ask(
                         old.transcript, old.reply
                     );
                     reply.push_str(&text);
-                    event(&mut stream, "ink", &text)?;
+                    push_job(&state, &job_id, "ink", &text);
                 }
             }
             Err(e) => {
                 failed = true;
-                event(
-                    &mut stream,
+                push_job(
+                    &state,
+                    &job_id,
                     "error",
                     &format!("The diary's ink has gone cold: {e}"),
-                )?;
+                );
             }
         }
     }
     if !failed && !reply.trim().is_empty() {
-        if let Ok(mut guard) = memory.lock() {
+        if let Ok(mut guard) = state.memory.lock() {
             if let Some(store) = guard.as_mut() {
                 store.append(id, &transcript, reply.trim(), &Strokes::new());
             }
         }
     }
-    event(&mut stream, "done", "")
-}
-
-fn event(stream: &mut TcpStream, kind: &str, text: &str) -> std::io::Result<()> {
-    writeln!(
-        stream,
-        "{{\"type\":{},\"text\":{}}}",
-        quote(kind),
-        quote(text)
-    )?;
-    stream.flush()
+    push_job(&state, &job_id, "done", "");
 }
 
 fn quote(s: &str) -> String {
@@ -252,8 +327,8 @@ fn quote(s: &str) -> String {
     out
 }
 
-fn build_ctx(memory: &Arc<Mutex<Option<MemoryStore>>>) -> TurnContext {
-    let Ok(guard) = memory.lock() else {
+fn build_ctx(state: &Arc<AppState>) -> TurnContext {
+    let Ok(guard) = state.memory.lock() else {
         return TurnContext::default();
     };
     let Some(store) = guard.as_ref() else {

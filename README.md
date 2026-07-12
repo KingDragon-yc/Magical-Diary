@@ -139,6 +139,7 @@ RIDDLE_OPENAI_KEY=你的_Kimi_API_Key
 RIDDLE_OPENAI_BASE=https://api.moonshot.cn/v1
 RIDDLE_OPENAI_MODEL=kimi-k2.6
 RIDDLE_OPENAI_MAX_TOKENS=800
+RIDDLE_OPENAI_THINKING=disabled
 RIDDLE_TZ_OFFSET=8
 ```
 
@@ -171,4 +172,3 @@ http://127.0.0.1:8787
 本仓库在原项目基础上增加了面向鸿蒙 / Android 平板的 Termux 本地网页版本，包括浏览器手写画布、本地 HTTP 服务、Kimi 配置和首次启动设置界面。
 
 原项目采用 MIT License，本仓库继续保留并遵循该许可证，详见 [LICENSE](LICENSE)。Dancing Script 字体许可见 [fonts/OFL.txt](fonts/OFL.txt)。
-
